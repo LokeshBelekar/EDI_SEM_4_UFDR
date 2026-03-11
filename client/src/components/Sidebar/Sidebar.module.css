@@ -1,0 +1,125 @@
+.sidebar {
+  width: var(--sidebar-width);
+  height: 100vh;
+  background-color: var(--bg-surface);
+  border-right: 1px solid var(--border-muted);
+  display: flex;
+  flex-direction: column;
+  padding: 32px 0;
+  flex-shrink: 0; /* Prevents the sidebar from collapsing in the flex container */
+}
+
+.brandContainer {
+  padding: 0 24px;
+  margin-bottom: 40px;
+}
+
+.logo {
+  font-weight: 800;
+  font-size: 1.4rem;
+  letter-spacing: 3px;
+  color: var(--text-main);
+  text-transform: uppercase;
+}
+
+.logoAccent {
+  color: var(--accent-primary);
+}
+
+.systemStatus {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.65rem;
+  color: var(--accent-success);
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.statusDot {
+  width: 6px;
+  height: 6px;
+  background-color: var(--accent-success);
+  border-radius: 50%;
+  box-shadow: 0 0 8px var(--accent-success);
+}
+
+.selectorSection {
+  padding: 0 24px;
+  margin-bottom: 48px;
+}
+
+.label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: 1.5px;
+  display: block;
+  margin-bottom: 12px;
+  text-transform: uppercase;
+}
+
+.caseDropdown {
+  width: 100%;
+  background: var(--bg-deep);
+  border: 1px solid var(--border-muted);
+  color: var(--text-main);
+  padding: 12px;
+  font-size: 0.8rem;
+  font-family: "IBM Plex Mono", monospace;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.3s ease;
+}
+
+.caseDropdown:focus {
+  border-color: var(--accent-primary);
+}
+
+.navLinks {
+  flex: 1;
+}
+
+.navItem,
+.navItemActive {
+  display: block;
+  padding: 18px 24px;
+  text-decoration: none;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 2px;
+  color: var(--text-muted);
+  border-left: 4px solid transparent;
+  transition: all 0.3s ease;
+  text-transform: uppercase;
+}
+
+.navItemActive {
+  color: var(--text-main);
+  background: linear-gradient(
+    90deg,
+    rgba(61, 139, 255, 0.08) 0%,
+    transparent 100%
+  );
+  border-left-color: var(--accent-primary);
+}
+
+.navItem:hover:not(.navItemActive) {
+  background: var(--bg-elevated);
+  color: var(--text-main);
+}
+
+.sidebarFooter {
+  padding: 0 24px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.6rem;
+  color: var(--text-dim);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.terminalInfo,
+.authStatus {
+  letter-spacing: 1px;
+}

@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+psycopg2-binary
+neo4j
+pydantic
+pydantic-settings
+groq
+networkx
+pandas
+openpyxl
+python-dotenv
+python-multipart
+transformers
+torch
+langchain 
+langchain-groq 
+langchain-community
