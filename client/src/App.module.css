@@ -1,0 +1,18 @@
+.appContainer {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+  background-color: var(--bg-deep);
+}
+
+.mainViewport {
+  flex: 1;
+  height: 100vh;
+  overflow-y: auto;
+  position: relative;
+  background-image:
+    linear-gradient(var(--border-muted) 1px, transparent 1px),
+    linear-gradient(90deg, var(--border-muted) 1px, transparent 1px);
+  background-size: 100px 100px; /* Subtle grid overlay */
+  background-color: var(--bg-deep);
+}

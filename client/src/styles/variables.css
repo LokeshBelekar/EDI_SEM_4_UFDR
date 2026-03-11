@@ -1,0 +1,24 @@
+:root {
+  /* Color Palette - Gunmetal & Slate */
+  --bg-deep: #08090b;
+  --bg-surface: #111317;
+  --bg-elevated: #1a1d23;
+
+  /* Borders */
+  --border-muted: #24282f;
+  --border-active: #3a424e;
+
+  /* Accents */
+  --accent-primary: #3d8bff;
+  --accent-success: #00ff41;
+  --accent-danger: #ff4d4d;
+
+  /* Typography */
+  --text-main: #e2e4e9;
+  --text-muted: #949ca9;
+  --text-dim: #5c6471;
+
+  /* Layout */
+  --sidebar-width: 280px;
+  --header-height: 72px;
+}
