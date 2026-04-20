@@ -1,21 +1,22 @@
+# File: analysis/nlp_engine.py
 import logging
 import torch
-import json
 from transformers import pipeline
-from database.postgres_db import get_db
+from db.postgres import db_manager
 
 logger = logging.getLogger("NLPEngine")
 
 class NLPEngine:
     """
-    Optimized NLP Engine using DistilBART for 3x speed increase.
-    Implements persistent PostgreSQL caching to eliminate redundant processing.
+    Forensic NLP Engine utilizing zero-shot classification for intent detection.
+    Features a persistence layer in PostgreSQL to cache analysis results and 
+    accelerate subsequent investigative queries.
     """
     def __init__(self, model_name="valhalla/distilbart-mnli-12-1"):
-        # Auto-detect hardware
+        # Select optimal hardware acceleration
         self.device = 0 if torch.cuda.is_available() or torch.backends.mps.is_available() else -1
         
-        logger.info(f"Initializing Optimized NLP Engine using {model_name}")
+        logger.info(f"Initializing Forensic NLP Engine with model: {model_name}")
         
         try:
             self.classifier = pipeline(
@@ -23,20 +24,21 @@ class NLPEngine:
                 model=model_name, 
                 device=self.device
             )
-            # Match the new Postgres database method name
-            get_db().initialize_tables()
-            logger.info("Forensic NLP model loaded and storage initialized.")
+            logger.info("NLP classification pipeline ready.")
         except Exception as e:
-            logger.error(f"Initialization error: {e}")
+            logger.error(f"Failed to initialize NLP classification pipeline: {e}")
             self.classifier = None
 
     def _get_persistent_results(self, case_id: str):
-        """Retrieves previously computed results from PostgreSQL."""
-        db = get_db()
+        """Retrieves cached analysis results from the persistence layer."""
         try:
-            with db.get_connection() as conn:
+            with db_manager.get_connection() as conn:
                 with conn.cursor() as cursor:
-                    query = "SELECT sender, risk_score_sum, detected_behaviors, message_count FROM nlp_analysis_results WHERE case_id = %s"
+                    query = """
+                        SELECT sender, risk_score_sum, detected_behaviors, message_count 
+                        FROM nlp_analysis_results 
+                        WHERE case_id = %s
+                    """
                     cursor.execute(query, (case_id,))
                     rows = cursor.fetchall()
                     if rows:
@@ -49,14 +51,13 @@ class NLPEngine:
                             }
                         return results
         except Exception as e:
-            logger.error(f"Persistent storage read error: {e}")
+            logger.error(f"Error reading persistent NLP results: {e}")
         return None
 
     def _save_persistent_results(self, case_id: str, risk_profile: dict):
-        """Saves computation results to PostgreSQL for future instant access."""
-        db = get_db()
+        """Caches analysis metrics to PostgreSQL for future retrieval."""
         try:
-            with db.get_connection() as conn:
+            with db_manager.get_connection() as conn:
                 with conn.cursor() as cursor:
                     for sender, data in risk_profile.items():
                         query = """
@@ -65,7 +66,8 @@ class NLPEngine:
                         ON CONFLICT (case_id, sender) DO UPDATE SET
                             risk_score_sum = EXCLUDED.risk_score_sum,
                             detected_behaviors = EXCLUDED.detected_behaviors,
-                            message_count = EXCLUDED.message_count;
+                            message_count = EXCLUDED.message_count,
+                            last_analyzed = CURRENT_TIMESTAMP;
                         """
                         cursor.execute(query, (
                             case_id, 
@@ -76,54 +78,73 @@ class NLPEngine:
                         ))
                     conn.commit()
         except Exception as e:
-            logger.error(f"Persistent storage write error: {e}")
+            logger.error(f"Error writing persistent NLP results: {e}")
 
     def analyze_case_evidence(self, case_id: str):
         """
-        Main entry point. Check DB -> If empty, run 3x faster AI -> Save to DB.
+        Orchestrates evidence analysis. Checks cache first; if unavailable, 
+        executes inference on raw message logs and updates the cache.
         """
-        # 1. Check persistent storage first
+        # Attempt to load from cache to prevent redundant computation
         cached_data = self._get_persistent_results(case_id)
         if cached_data:
-            logger.info(f"Instant retrieval from persistent storage for case: {case_id}")
+            logger.info(f"Loaded NLP analysis from cache for case: {case_id}")
             return cached_data
 
-        # 2. If not found, run the optimized inference
-        db = get_db()
+        if not self.classifier:
+            logger.error("NLP classifier unavailable for inference.")
+            return {}
+
         risk_profile = {}
         try:
-            with db.get_connection() as conn:
+            with db_manager.get_connection() as conn:
                 with conn.cursor() as cursor:
                     query = "SELECT sender, message FROM messages WHERE case_id = %s AND message IS NOT NULL"
                     cursor.execute(query, (case_id,))
                     rows = cursor.fetchall()
-        except Exception:
+        except Exception as e:
+            logger.error(f"Database error during evidence retrieval: {e}")
             return {}
 
-        if not rows: return {}
+        if not rows:
+            return {}
+
         senders, messages = zip(*rows)
-        candidate_labels = ["financial coordination", "logistical planning", "suspicious behavior", "evidence destruction"]
+        candidate_labels = [
+            "financial coordination", 
+            "logistical planning", 
+            "suspicious behavior", 
+            "evidence destruction"
+        ]
 
-        logger.info(f"First-time processing: Analyzing {len(messages)} messages for case: {case_id}")
+        logger.info(f"Commencing batch analysis for {len(messages)} messages in case: {case_id}")
 
+        # Batch inference with standard thresholds
         results = self.classifier(list(messages), candidate_labels, multi_label=True, batch_size=8)
 
         for i, analysis in enumerate(results):
             sender = senders[i]
             if sender not in risk_profile:
-                risk_profile[sender] = {"total_messages_analyzed": 0, "risk_score_sum": 0.0, "detected_behaviors": set()}
+                risk_profile[sender] = {
+                    "total_messages_analyzed": 0, 
+                    "risk_score_sum": 0.0, 
+                    "detected_behaviors": set()
+                }
             
             risk_profile[sender]["total_messages_analyzed"] += 1
             for label, score in zip(analysis['labels'], analysis['scores']):
+                # Filter for high-confidence forensic indicators
                 if score > 0.7:
                     risk_profile[sender]["risk_score_sum"] += score
                     risk_profile[sender]["detected_behaviors"].add(label)
 
+        # Convert sets to lists for JSON serialization compatibility
         for s in risk_profile:
             risk_profile[s]["detected_behaviors"] = list(risk_profile[s]["detected_behaviors"])
 
-        # 3. Save for the future
+        # Update cache with new findings
         self._save_persistent_results(case_id, risk_profile)
         return risk_profile
 
+# Singleton engine instance
 nlp_engine = NLPEngine()

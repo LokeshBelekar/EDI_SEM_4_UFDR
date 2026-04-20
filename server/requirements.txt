@@ -6,12 +6,14 @@ pydantic
 pydantic-settings
 groq
 networkx
+scipy
 pandas
 openpyxl
 python-dotenv
 python-multipart
 transformers
 torch
-langchain 
-langchain-groq 
+langchain
+langchain-groq
 langchain-community
+pillow

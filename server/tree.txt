@@ -1,0 +1,54 @@
+﻿server/
+├── main.py
+├── requirements.txt
+├── agents/
+│   ├── __init__.py
+│   ├── llm_core.py
+│   └── tools.py
+├── analysis/
+│   ├── __init__.py
+│   ├── graph.py
+│   ├── nlp.py
+│   ├── poi.py
+│   └── vision.py
+├── api/
+│   ├── __init__.py
+│   └── routes.py
+├── database/
+│   ├── __init__.py
+│   ├── init_schema.py
+│   ├── neo4j_db.py
+│   ├── postgres_db.py
+│   └── schemas.py
+├── pipeline/
+│   ├── __init__.py
+│   └── ingestion.py
+└── touse/ 
+
+------------------------------------------------------------
+
+server/
+├── .env                        # Environment secrets
+├── requirements.txt            # Dependency list
+├── main.py              (done) # Entry point (App initialization & Middleware)
+├── core/
+│   └── config.py        (done) # Settings management (Pydantic-based .env loader) (done)
+├── api/
+│   ├── endpoints.py     (done) # All API route definitions (using APIRouter)
+│   └── dependencies.py         # Shared API dependencies (e.g., db access)
+├── agents/
+│   ├── orchestrator.py  (done) # LLM Agent logic (renamed from llm_core.py)
+│   └── tools.py         (done) # LangChain tool definitions
+├── analysis/
+│   ├── graph_engine.py  (done) # Relation graph logic
+│   ├── nlp_engine.py    (done) # NLP/Transformer logic
+│   ├── poi_engine.py    (done) # Suspect ranking/Threat matrix
+│   └── vision_engine.py (done) # Image/Vision logic
+├── db/                         # Renamed from database/ for standard naming
+│   ├── postgres.py      (done) # Postgres connection & managers
+│   ├── neo4j.py         (done) # Neo4j driver & logic
+│   ├── schemas.py       (done) # Centralized Pydantic Data Models
+│   └── setup.py         (done) # Database initialization logic (renamed from init_schema.py)
+├── pipeline/
+│   └── ingestion.py     (done) # Data loading ETL script
+└── touse/                      # Raw evidence storage

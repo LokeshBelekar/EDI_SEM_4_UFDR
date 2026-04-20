@@ -1,21 +1,24 @@
+# File: db/setup.py
 import logging
-from database.postgres_db import get_db
-from database.neo4j_db import neo4j_conn
+from db.postgres import db_manager
+from db.neo4j import neo4j_conn
 
-# Configure professional logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("SchemaInit")
+# Standardized professional logging configuration
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("DatabaseSetup")
 
 def init_postgres_schema():
     """
-    Builds the Postgres schema with case_id isolation.
-    Safely utilizes the threaded connection pool to prevent leaks.
+    Initializes the PostgreSQL database schema for forensic evidence storage.
+    Creates necessary tables with case isolation logic and data integrity constraints.
     """
-    db = get_db()
     try:
-        with db.get_connection() as conn:
+        with db_manager.get_connection() as conn:
             with conn.cursor() as cursor:
-                logger.info("Dropping old PostgreSQL tables...")
+                logger.info("Dropping legacy PostgreSQL evidence tables...")
                 cursor.execute("""
                     DROP TABLE IF EXISTS messages CASCADE;
                     DROP TABLE IF EXISTS calls CASCADE;
@@ -24,7 +27,7 @@ def init_postgres_schema():
                     DROP TABLE IF EXISTS timeline CASCADE;
                 """)
                 
-                logger.info("Creating new PostgreSQL tables with case_id isolation...")
+                logger.info("Applying core PostgreSQL schema definitions...")
                 cursor.execute("""
                     CREATE TABLE messages (
                         id SERIAL PRIMARY KEY,
@@ -34,8 +37,7 @@ def init_postgres_schema():
                         timestamp TIMESTAMP,
                         message TEXT
                     );
-                """)
-                cursor.execute("""
+
                     CREATE TABLE calls (
                         id SERIAL PRIMARY KEY,
                         case_id VARCHAR(100),
@@ -45,16 +47,14 @@ def init_postgres_schema():
                         call_duration_seconds INTEGER,
                         call_type VARCHAR(50)
                     );
-                """)
-                cursor.execute("""
+
                     CREATE TABLE contacts (
                         id SERIAL PRIMARY KEY,
                         case_id VARCHAR(100),
                         name VARCHAR(255),
                         phone VARCHAR(50)
                     );
-                """)
-                cursor.execute("""
+
                     CREATE TABLE media_sharing (
                         id SERIAL PRIMARY KEY,
                         case_id VARCHAR(100),
@@ -62,10 +62,11 @@ def init_postgres_schema():
                         receiver VARCHAR(255),
                         timestamp TIMESTAMP,
                         file_path VARCHAR(500),
-                        file_type VARCHAR(50)
+                        file_name VARCHAR(255),
+                        file_type VARCHAR(50),
+                        file_data BYTEA
                     );
-                """)
-                cursor.execute("""
+
                     CREATE TABLE timeline (
                         id SERIAL PRIMARY KEY,
                         case_id VARCHAR(100),
@@ -77,44 +78,43 @@ def init_postgres_schema():
                 """)
                 conn.commit()
         
-        logger.info("✅ PostgreSQL evidence schema initialized successfully.")
+        logger.info("PostgreSQL evidence schema initialized successfully.")
         
-        # Automatically initialize the AI memory and NLP tables as well
-        db.initialize_tables()
+        # Initialize internal analysis result tables and chat history
+        db_manager.initialize_tables()
         
     except Exception as e:
-        logger.error(f"❌ Error initializing Postgres schema: {e}")
+        logger.error(f"Error during PostgreSQL schema initialization: {e}")
 
 def init_neo4j_schema():
-    """Wipes old data and sets up the new UID constraint."""
+    """
+    Configures Neo4j graph database schema, constraints, and wipes legacy nodes.
+    """
     driver = neo4j_conn.get_driver()
     if not driver:
-        logger.warning("⚠️ Neo4j not connected.")
+        logger.error("Neo4j driver unavailable. Skipping graph schema initialization.")
         return
         
     try:
         with driver.session() as session:
-            logger.info("Wiping old Neo4j graph data...")
-            session.run("MATCH (n) DETACH DELETE n") # Completely clear the graph
+            logger.info("Clearing legacy Neo4j graph data...")
+            session.run("MATCH (n) DETACH DELETE n")
             
-            # Try to drop the old constraint if it exists
-            try:
-                session.run("DROP CONSTRAINT person_name IF EXISTS")
-            except Exception:
-                pass
+            logger.info("Configuring Neo4j unique identity constraints...")
+            # Clean up deprecated constraints if they exist
+            session.run("DROP CONSTRAINT person_name IF EXISTS")
             
-            # Create the new single-property UID constraint
+            # Apply standard UID constraint for forensic entity resolution
             session.run("""
                 CREATE CONSTRAINT person_uid IF NOT EXISTS 
                 FOR (p:Person) REQUIRE p.uid IS UNIQUE
             """)
-        logger.info("✅ Neo4j constraints initialized successfully.")
+        logger.info("Neo4j schema constraints initialized successfully.")
     except Exception as e:
-        logger.error(f"❌ Error initializing Neo4j schema: {e}")
+        logger.error(f"Error during Neo4j schema initialization: {e}")
 
 if __name__ == "__main__":
-    print("==================================================")
-    print("      Initializing Enterprise Database Schemas    ")
-    print("==================================================")
+    logger.info("Starting Enterprise Database Setup sequence...")
     init_postgres_schema()
     init_neo4j_schema()
+    logger.info("Database setup sequence complete.")
