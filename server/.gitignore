@@ -27,6 +27,7 @@ wheels/
 venv/
 ENV/
 env/
+og.env
 
 # Environment variables
 .env
