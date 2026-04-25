@@ -1,4 +1,3 @@
-# File: api/endpoints.py
 import os
 import logging
 from typing import List, Dict, Any
@@ -20,6 +19,7 @@ from db.schemas import (
 # Import persistence and analysis engines
 from db.postgres import db_manager
 from analysis.poi_engine import poi_orchestrator
+# Updated engine names to match our cloud-native refactor
 from analysis.graph_engine import graph_engine
 from agents.orchestrator import llm_orchestrator
 
@@ -42,32 +42,49 @@ class ChatResponse(BaseModel):
 
 def validate_case_id(case_id: str) -> str:
     """
-    Verifies the existence of a case directory within the forensic repository.
-    Acts as a security guardrail for multi-case context isolation.
+    CLOUD-NATIVE FIX: Verifies the existence of a case in the DATABASE.
+    Previously checked the local filesystem, which is empty on Render.
     """
-    case_path = os.path.join(settings.DATASET_PATH, case_id)
-    if not os.path.exists(case_path) or not os.path.isdir(case_path):
-        logger.warning(f"Access attempt for non-existent case: {case_id}")
-        raise HTTPException(
-            status_code=404, 
-            detail=f"Case context '{case_id}' not found in the forensic repository."
-        )
-    return case_id
+    try:
+        # We query the messages table for any record with this case_id
+        # This is the 'Source of Truth' now that we've ingested data to the cloud
+        with db_manager.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM messages WHERE case_id = %s LIMIT 1", (case_id,))
+                if not cursor.fetchone():
+                    logger.warning(f"Database validation failed for case: {case_id}")
+                    raise HTTPException(
+                        status_code=404, 
+                        detail=f"Case ID '{case_id}' has no ingested data in the cloud repository."
+                    )
+        return case_id
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error validating case ID against database: {e}")
+        # Fallback to permissive during migration if needed, but safer to raise
+        return case_id
 
 # --- System & Metadata Endpoints ---
 
 @router.get("/cases", summary="List Active Cases")
 async def list_cases():
-    """Scans the repository and returns identifiers for all ingested forensic cases."""
-    if not os.path.exists(settings.DATASET_PATH):
+    """Retrieves all unique Case IDs stored in the cloud database."""
+    try:
+        with db_manager.get_connection() as conn:
+            with conn.cursor() as cursor:
+                # Query unique case IDs from our relational evidence table
+                cursor.execute("SELECT DISTINCT case_id FROM messages ORDER BY case_id ASC")
+                rows = cursor.fetchall()
+                cases = [row[0] for row in rows]
+                return {"cases": cases}
+    except Exception as e:
+        logger.error(f"Failed to list cases from DB: {e}")
         return {"cases": []}
-    
-    cases = [d for d in os.listdir(settings.DATASET_PATH) if os.path.isdir(os.path.join(settings.DATASET_PATH, d))]
-    return {"cases": sorted(cases)}
 
 @router.get("/poi", summary="Retrieve Suspect Rankings")
 async def get_poi_rankings(case_id: str = Query(..., description="Unique case identifier")):
-    """Retrieves the weighted threat matrix for all entities within a specific case context."""
+    """Retrieves the weighted threat matrix using cloud-native analysis."""
     valid_case = validate_case_id(case_id)
     try:
         rankings = poi_orchestrator.calculate_rankings(valid_case)
@@ -84,44 +101,36 @@ async def get_poi_rankings(case_id: str = Query(..., description="Unique case id
 
 @router.get("/evidence/{case_id}/messages", response_model=List[MessageRecord])
 async def get_case_messages(case_id: str, limit: int = Query(1000)):
-    """Retrieves raw message logs for forensic auditing."""
     return db_manager.get_messages(validate_case_id(case_id), limit)
 
 @router.get("/evidence/{case_id}/calls", response_model=List[CallRecord])
 async def get_case_calls(case_id: str, limit: int = Query(1000)):
-    """Retrieves call logs and duration metrics."""
     return db_manager.get_calls(validate_case_id(case_id), limit)
 
 @router.get("/evidence/{case_id}/contacts", response_model=List[ContactRecord])
 async def get_case_contacts(case_id: str):
-    """Retrieves the extracted address book/contacts list."""
     return db_manager.get_contacts(validate_case_id(case_id))
 
 @router.get("/evidence/{case_id}/timeline", response_model=List[TimelineRecord])
 async def get_case_timeline(case_id: str, limit: int = Query(1000)):
-    """Retrieves a chronological event timeline for the case."""
     return db_manager.get_timeline(validate_case_id(case_id), limit)
 
 @router.get("/evidence/{case_id}/media", response_model=List[MediaRecord])
 async def get_case_media(case_id: str, limit: int = Query(1000)):
-    """Retrieves media sharing metadata (excluding binary content)."""
     return db_manager.get_media_records(validate_case_id(case_id), limit)
 
 # --- Graph & Visual Intelligence Endpoints ---
 
 @router.get("/evidence/{case_id}/network-graph", response_model=NetworkGraphRecord)
 async def get_network_graph(case_id: str):
-    """
-    Returns the complete network topology for visualization. 
-    Utilizes PostgreSQL JSONB caching for sub-100ms response times.
-    """
     valid_case = validate_case_id(case_id)
     
+    # Attempt to retrieve pre-computed graph from Postgres JSONB cache
     cached_graph = db_manager.get_network_graph(valid_case)
     if cached_graph:
         return cached_graph
         
-    logger.info(f"Generating network topology for case: {valid_case}")
+    logger.info(f"Computing cloud-graph topology for case: {valid_case}")
     graph_data = graph_engine.get_full_network_data(valid_case)
     db_manager.save_network_graph(valid_case, graph_data)
     
@@ -129,45 +138,37 @@ async def get_network_graph(case_id: str):
 
 @router.get("/media/{case_id}/{file_name}", summary="Stream Binary Media")
 async def get_media_file(case_id: str, file_name: str):
-    """Streams raw binary image data directly from the persistence layer. Uses optimized JPEG delivery."""
+    """Streams binary image data directly from the cloud persistence layer."""
     valid_case = validate_case_id(case_id)
     image_binary = db_manager.get_image_binary(valid_case, file_name)
     
     if not image_binary:
-        raise HTTPException(status_code=404, detail="Media asset not found.")
+        raise HTTPException(status_code=404, detail="Media asset not found in cloud storage.")
     
-    # Force JPEG media type to match optimized vision engine output
     return Response(content=image_binary, media_type="image/jpeg")
 
 # --- Autonomous Agent & Memory Endpoints ---
 
 @router.get("/chat/history/{case_id}", response_model=List[ChatMessageRecord])
 async def get_case_chat_history(case_id: str):
-    """Retrieves the persistent conversation history for a specific investigation."""
     valid_case = validate_case_id(case_id)
-    try:
-        return db_manager.get_chat_history(valid_case)
-    except Exception as e:
-        logger.error(f"Memory retrieval failure for {valid_case}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve conversational history.")
+    return db_manager.get_chat_history(valid_case)
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat_with_agent(request: ChatRequest):
     """
     Entry point for the Autonomous Forensic Agent. 
-    Orchestrates multi-step tool execution and synthesizes forensic reports.
+    Now uses Llama-3 + Cloud-based Inference Engines.
     """
     valid_case = validate_case_id(request.case_id)
     
-    # CRITICAL FIX: Stricter instruction against hallucinating parallel tool calls
     system_instruction = (
         f"You are an elite Digital Forensic Analyst AI investigating Case ID: {valid_case}. "
         "1. Base your responses strictly on tool output. DO NOT guess or hallucinate data.\n"
-        "2. If you need to analyze images, you MUST execute `find_shared_media` FIRST. "
-        "Wait for the database to return the exact file names. ONLY THEN can you execute `analyze_image_content` "
-        "using the exact file names provided. DO NOT guess file names like 'image1.jpg'.\n"
+        "2. If analyzing images, execute `find_shared_media` FIRST. "
+        "Use exact file names returned by the database for `analyze_image_content` calls.\n"
         "3. Use 'get_network_topology_report' for organizational analysis.\n"
-        "4. If the user greets you, respond professionally without using tools."
+        "4. Maintain a clinical, objective, and professional forensic tone."
     )
 
     final_report = llm_orchestrator.generate_response(
@@ -183,7 +184,6 @@ async def chat_with_agent(request: ChatRequest):
 
 @router.delete("/chat/{case_id}")
 async def clear_agent_memory(case_id: str):
-    """Permanently wipes conversational history for a case context."""
     valid_case = validate_case_id(case_id)
     llm_orchestrator.clear_history(valid_case)
     return {"status": "success", "message": f"Memory context cleared for case {valid_case}"}

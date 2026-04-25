@@ -1,55 +1,75 @@
-# File: analysis/vision_engine.py
 import base64
 import logging
 import io
+import os
+import time
+import requests
 from PIL import Image
-from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage
-from core.config import settings
 from db.postgres import db_manager
 
 logger = logging.getLogger("VisionEngine")
 
 class VisionEngine:
     """
-    Multimodal Image Analysis Engine for the forensic suite.
-    Features automated image optimization to ensure payloads remain within 
-    LLM API limits, preventing 413 (Payload Too Large) errors.
+    Forensic Vision Engine utilizing Hugging Face Serverless Inference.
+    Features automated image optimization to comply with Cloud API payload limits
+    and memory-optimized processing for Render/Railway deployments.
     """
-    def __init__(self):
-        self.api_key = settings.GROQ_API_KEY
-        self.model_name = "llama-3.2-11b-vision-preview"
+    def __init__(self, model_name="Salesforce/blip-image-captioning-large"):
+        self.api_url = f"https://api-inference.huggingface.co/models/{model_name}"
+        self.api_key = os.getenv("HF_API_KEY")
         
-        if self.api_key:
-            self.chat = ChatGroq(
-                temperature=0.0,
-                model_name=self.model_name,
-                groq_api_key=self.api_key,
-                max_retries=3
-            )
-            logger.info(f"Vision Engine initialized using multimodal model: {self.model_name}")
-        else:
-            self.chat = None
-            logger.error("Vision Engine configuration incomplete: GROQ_API_KEY missing.")
+        logger.info(f"Initializing Forensic Vision Engine using Cloud Inference: {model_name}")
+        
+        if not self.api_key:
+            logger.error("HF_API_KEY not found in environment variables. Vision analysis will fail.")
+
+    def _query_api(self, binary_data):
+        """Executes a request to Hugging Face with exponential backoff for image data."""
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        
+        max_retries = 5
+        for i in range(max_retries):
+            try:
+                response = requests.post(self.api_url, headers=headers, data=binary_data, timeout=30)
+                result = response.json()
+                
+                # Handle model loading state (common in free tier)
+                if isinstance(result, dict) and "estimated_time" in result:
+                    wait_time = result.get("estimated_time", 15)
+                    logger.info(f"HF Vision Model is loading. Waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                
+                if response.status_code == 200:
+                    return result
+                
+                logger.warning(f"HF Vision API returned status {response.status_code}: {result}")
+            except Exception as e:
+                logger.error(f"HF Vision API Connection Error: {e}")
+            
+            time.sleep(2 ** i)
+            
+        return None
 
     def _optimize_image(self, binary_data: bytes) -> bytes:
         """
-        Resizes and compresses image data to optimize transit and comply with 
-        upstream API constraints.
+        Resizes and compresses image data to ensure fast transit and 
+        compliance with HF Inference API size limits.
         """
         try:
             img = Image.open(io.BytesIO(binary_data))
             
-            # Normalize image mode to RGB for standard JPEG conversion
+            # Normalize image mode to RGB
             if img.mode in ("RGBA", "P"):
                 img = img.convert("RGB")
             
-            # Constrain dimensions while maintaining aspect ratio (Max 1024px)
-            max_size = (1024, 1024)
+            # Constrain dimensions to max 800px for speed on free tier
+            max_size = (800, 800)
             img.thumbnail(max_size, Image.Resampling.LANCZOS)
             
             output = io.BytesIO()
-            img.save(output, format="JPEG", quality=85, optimize=True)
+            img.save(output, format="JPEG", quality=80, optimize=True)
             return output.getvalue()
         except Exception as e:
             logger.warning(f"Image optimization bypassed due to error: {e}")
@@ -57,11 +77,11 @@ class VisionEngine:
 
     def analyze_image(self, case_id: str, file_name: str) -> str:
         """
-        Orchestrates visual evidence analysis. Retrieves binary data, optimizes 
-        the image, and executes multimodal forensic reasoning.
+        Orchestrates visual evidence analysis via Hugging Face.
+        Retrieves binary from DB, optimizes, and queries the cloud model.
         """
-        if not self.chat:
-            return "Forensic vision capabilities are currently unavailable."
+        if not self.api_key:
+            return "Vision capabilities are offline: HF_API_KEY missing."
             
         # Retrieve the raw media from the PostgreSQL persistence layer
         image_binary = db_manager.get_image_binary(case_id, file_name)
@@ -69,35 +89,27 @@ class VisionEngine:
             return f"Evidence item '{file_name}' could not be located in the repository."
 
         try:
-            # Process and optimize image for the multimodal payload
+            # Optimize image to keep payload small
             optimized_data = self._optimize_image(image_binary)
-            base64_image = base64.b64encode(optimized_data).decode('utf-8')
             
-            # Construct a structured multimodal investigative prompt
-            message = HumanMessage(
-                content=[
-                    {
-                        "type": "text", 
-                        "text": (
-                            "You are an expert digital forensics analyst. Describe this image in detail. "
-                            "Identify key entities, objects, geographical locations, and visible text (OCR). "
-                            "Maintain a professional, clinical, and objective tone."
-                        )
-                    },
-                    {
-                        "type": "image_url", 
-                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
-                    }
-                ]
-            )
+            logger.info(f"Executing cloud-based forensic vision analysis for: {file_name}")
             
-            logger.info(f"Executing multimodal forensic analysis for evidence item: {file_name}")
-            response = self.chat.invoke([message])
+            # Query HF Inference API
+            result = self._query_api(optimized_data)
             
-            return f"Forensic visual analysis of {file_name}:\n\n{response.content}"
+            if result and isinstance(result, list) and len(result) > 0:
+                # BLIP model returns a list with generated text
+                analysis_text = result[0].get("generated_text", "No description generated.")
+                return (
+                    f"--- Forensic Visual Analysis of {file_name} ---\n\n"
+                    f"OBSERVATION: {analysis_text.capitalize()}.\n\n"
+                    "Note: This analysis was generated via Serverless Cloud Inference."
+                )
+            
+            return f"Vision Engine was unable to generate a meaningful report for {file_name}."
             
         except Exception as e:
-            logger.error(f"Multimodal inference failed for {file_name}: {e}")
+            logger.error(f"Cloud vision inference failed for {file_name}: {e}")
             return f"Error during visual evidence processing: {str(e)}"
 
 # Singleton engine instance
