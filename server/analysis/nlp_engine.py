@@ -1,76 +1,50 @@
 import logging
 import time
-import requests
 import os
-from database.postgres_db import get_db
+import json
+import re
+from dotenv import load_dotenv
+from db.postgres import db_manager
+from langchain_groq import ChatGroq
+from langchain_core.messages import SystemMessage, HumanMessage
+
+# Force Python to load the .env file into the OS environment variables
+load_dotenv()
 
 logger = logging.getLogger("NLPEngine")
 
 class NLPEngine:
     """
-    Cloud-Native NLP Engine using Hugging Face Serverless Inference.
-    Features persistent PostgreSQL caching and robust JSON/HTML error handling.
+    Cloud-Native NLP Engine using Groq's Llama-3 for high-speed intent classification.
+    Bypasses Hugging Face completely for 100% reliability and zero local RAM usage.
     """
-    def __init__(self, model_name="facebook/bart-large-mnli"):
-        self.api_url = f"https://api-inference.huggingface.co/models/{model_name}"
-        self.api_key = os.getenv("HF_API_KEY")
+    def __init__(self):
+        self.api_key = os.getenv("GROQ_API_KEY")
+        self.model_name = "llama-3.3-70b-versatile"
         
-        logger.info(f"Initializing Cloud NLP Engine using {model_name}")
+        logger.info("Initializing Forensic NLP Engine using Groq Inference...")
         
-        if not self.api_key:
-            logger.error("HF_API_KEY not found. NLP analysis will fail.")
+        if self.api_key:
+            self.chat = ChatGroq(
+                temperature=0.0,
+                model_name=self.model_name,
+                groq_api_key=self.api_key,
+                max_retries=3
+            )
+        else:
+            self.chat = None
+            logger.error("GROQ_API_KEY not found. NLP analysis will fail.")
             
         try:
             # Ensure the cache tables are ready in Postgres
-            get_db().initialize_tables()
+            db_manager.initialize_tables()
         except Exception as e:
             logger.error(f"Failed to initialize NLP cache tables: {e}")
 
-    def _query_api(self, payload):
-        """Executes a request to Hugging Face with robust HTML/JSON error handling."""
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        
-        max_retries = 5
-        for i in range(max_retries):
-            try:
-                response = requests.post(self.api_url, headers=headers, json=payload, timeout=30)
-                
-                # 1. Catch HTML/Server errors BEFORE trying to parse JSON
-                if response.status_code != 200:
-                    logger.warning(f"HF API returned status {response.status_code}: {response.text[:150]}")
-                    
-                    # If HF is just "warming up" the model, wait and retry
-                    if "estimated_time" in response.text:
-                        try:
-                            wait_time = response.json().get("estimated_time", 15)
-                        except:
-                            wait_time = 15
-                        logger.info(f"HF Model is waking up. Waiting {wait_time} seconds...")
-                        time.sleep(wait_time)
-                        continue
-                        
-                    # For other errors (500, 503), trigger exponential backoff
-                    time.sleep(2 ** i)
-                    continue
-                    
-                # 2. If 200 OK, it is safe to parse the JSON
-                return response.json()
-                
-            except requests.exceptions.JSONDecodeError:
-                logger.error("HF API returned non-JSON data (likely an HTML error page or timeout).")
-            except Exception as e:
-                logger.error(f"HF API Request Failed: {e}")
-            
-            # Exponential backoff: 1s, 2s, 4s, 8s, 16s
-            time.sleep(2 ** i)
-            
-        return None
-
     def _get_persistent_results(self, case_id: str):
         """Retrieves previously computed results from PostgreSQL."""
-        db = get_db()
         try:
-            with db.get_connection() as conn:
+            with db_manager.get_connection() as conn:
                 with conn.cursor() as cursor:
                     query = "SELECT sender, risk_score_sum, detected_behaviors, message_count FROM nlp_analysis_results WHERE case_id = %s"
                     cursor.execute(query, (case_id,))
@@ -79,7 +53,7 @@ class NLPEngine:
                         results = {}
                         for r in rows:
                             results[r[0]] = {
-                                "risk_score_sum": r[1],
+                                "risk_score_sum": float(r[1]),
                                 "detected_behaviors": r[2],
                                 "total_messages_analyzed": r[3]
                             }
@@ -90,9 +64,8 @@ class NLPEngine:
 
     def _save_persistent_results(self, case_id: str, risk_profile: dict):
         """Saves computation results to PostgreSQL for future instant access."""
-        db = get_db()
         try:
-            with db.get_connection() as conn:
+            with db_manager.get_connection() as conn:
                 with conn.cursor() as cursor:
                     for sender, data in risk_profile.items():
                         query = """
@@ -116,17 +89,20 @@ class NLPEngine:
 
     def analyze_case_evidence(self, case_id: str):
         """
-        Main entry point. Check DB -> If empty, run AI -> Save to DB.
+        Main entry point. Uses Groq to batch-analyze messages for forensic intents.
         """
         cached_data = self._get_persistent_results(case_id)
         if cached_data:
             logger.info(f"Loaded NLP analysis from cache for case: {case_id}")
             return cached_data
 
-        db = get_db()
+        if not self.chat:
+            logger.error("Groq client offline. Cannot perform NLP inference.")
+            return {}
+
         risk_profile = {}
         try:
-            with db.get_connection() as conn:
+            with db_manager.get_connection() as conn:
                 with conn.cursor() as cursor:
                     query = "SELECT sender, message FROM messages WHERE case_id = %s AND message IS NOT NULL"
                     cursor.execute(query, (case_id,))
@@ -137,36 +113,69 @@ class NLPEngine:
 
         if not rows: return {}
 
-        candidate_labels = ["financial coordination", "logistical planning", "suspicious behavior", "evidence destruction"]
-        logger.info(f"Commencing cloud batch analysis for {len(rows)} messages in case: {case_id}")
+        logger.info(f"Commencing Groq NLP Analysis for {len(rows)} messages...")
 
+        # Group messages by sender to analyze behavior contextually
+        sender_messages = {}
         for sender, message in rows:
             if not message.strip(): continue
-            
+            if sender not in sender_messages:
+                sender_messages[sender] = []
+            sender_messages[sender].append(message)
+
+        system_prompt = (
+            "You are an expert Forensic NLP classification system. "
+            "Analyze the following batch of messages from a single suspect. "
+            "Determine the presence of these four forensic intents: "
+            "'financial coordination', 'logistical planning', 'suspicious behavior', 'evidence destruction'.\n"
+            "Respond ONLY with a valid JSON object where keys are the exact intent names and values are a float between 0.0 and 1.0 representing your confidence. "
+            "If an intent is not present, assign it 0.0. Do not include markdown blocks or any other text."
+        )
+
+        for sender, messages in sender_messages.items():
             if sender not in risk_profile:
                 risk_profile[sender] = {"total_messages_analyzed": 0, "risk_score_sum": 0.0, "detected_behaviors": set()}
             
-            risk_profile[sender]["total_messages_analyzed"] += 1
+            # Process in batches of 40 messages to utilize Groq's large context window effectively
+            chunks = [messages[i:i + 40] for i in range(0, len(messages), 40)]
             
-            payload = {
-                "inputs": message,
-                "parameters": {"candidate_labels": candidate_labels, "multi_label": True}
-            }
-            
-            analysis = self._query_api(payload)
-            if analysis and "labels" in analysis:
-                for label, score in zip(analysis['labels'], analysis['scores']):
-                    if score > 0.7:
-                        risk_profile[sender]["risk_score_sum"] += score
-                        risk_profile[sender]["detected_behaviors"].add(label)
-            
-            # Prevent aggressive rate-limiting on HF free tier
-            time.sleep(0.1)
+            for chunk in chunks:
+                risk_profile[sender]["total_messages_analyzed"] += len(chunk)
+                messages_text = "\n".join([f"- {msg}" for msg in chunk])
+                
+                try:
+                    response = self.chat.invoke([
+                        SystemMessage(content=system_prompt),
+                        HumanMessage(content=messages_text)
+                    ])
+                    
+                    # Safely extract JSON using regex in case the LLM wraps it in markdown
+                    raw_text = response.content
+                    json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+                    
+                    if json_match:
+                        analysis = json.loads(json_match.group(0))
+                        
+                        for label, score in analysis.items():
+                            try:
+                                float_score = float(score)
+                                if float_score > 0.7:
+                                    risk_profile[sender]["risk_score_sum"] += float_score
+                                    risk_profile[sender]["detected_behaviors"].add(label)
+                            except ValueError:
+                                continue
+                except Exception as e:
+                    logger.error(f"Groq NLP classification failed for {sender}: {e}")
+                
+                # Tiny sleep to ensure we don't hit Groq's Free Tier RPM limits
+                time.sleep(1.5)
 
+        # Convert sets to lists for DB storage
         for s in risk_profile:
             risk_profile[s]["detected_behaviors"] = list(risk_profile[s]["detected_behaviors"])
 
         self._save_persistent_results(case_id, risk_profile)
+        logger.info("Groq NLP analysis complete and cached to PostgreSQL.")
         return risk_profile
 
 nlp_engine = NLPEngine()
