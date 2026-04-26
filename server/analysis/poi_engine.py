@@ -1,4 +1,3 @@
-# File: analysis/poi_engine.py
 import logging
 from typing import List, Dict, Any
 from analysis.graph_engine import graph_engine
@@ -15,11 +14,13 @@ class POIOrchestrator:
     """
 
     # Weighted coefficients for the threat algorithm.
+    # PageRank and NLP Risk are prioritized for identifying true ringleaders.
     COEFFICIENTS = {
-        "nlp_risk": 40.0,
-        "graph_betweenness": 35.0,
-        "graph_degree": 15.0,
-        "graph_closeness": 10.0
+        "nlp_risk": 35.0,
+        "graph_pagerank": 30.0,
+        "graph_betweenness": 20.0,
+        "graph_degree": 10.0,
+        "graph_closeness": 5.0
     }
 
     def __init__(self):
@@ -32,7 +33,7 @@ class POIOrchestrator:
         logger.info(f"Initiating multi-vector threat analysis for case: {case_id}")
 
         try:
-            # Safely retrieve metrics from our new cloud-based engines
+            # Safely retrieve metrics from our cloud-based engines
             graph_metrics = graph_engine.get_advanced_centrality(case_id) or {}
             behavioral_profiles = nlp_engine.analyze_case_evidence(case_id) or {}
         except Exception as e:
@@ -49,7 +50,7 @@ class POIOrchestrator:
 
         for entity in all_entities:
             try:
-                g_data = graph_metrics.get(entity, {"degree": 0.0, "betweenness": 0.0, "closeness": 0.0})
+                g_data = graph_metrics.get(entity, {"degree": 0.0, "betweenness": 0.0, "closeness": 0.0, "pagerank": 0.0})
                 n_data = behavioral_profiles.get(entity, {
                     "risk_score_sum": 0.0, 
                     "detected_behaviors": [], 
@@ -59,6 +60,7 @@ class POIOrchestrator:
                 # Calculate Weighted Threat Score
                 threat_score = (
                     (float(n_data.get("risk_score_sum", 0)) * self.COEFFICIENTS["nlp_risk"]) +
+                    (float(g_data.get("pagerank", 0)) * 100 * self.COEFFICIENTS["graph_pagerank"]) +
                     (float(g_data.get("betweenness", 0)) * 100 * self.COEFFICIENTS["graph_betweenness"]) +
                     (float(g_data.get("degree", 0)) * 100 * self.COEFFICIENTS["graph_degree"]) +
                     (float(g_data.get("closeness", 0)) * 100 * self.COEFFICIENTS["graph_closeness"])
@@ -70,6 +72,7 @@ class POIOrchestrator:
                     "threat_score": round(threat_score, 2),
                     "risk_indicators": {
                         "network_influence": {
+                            "pagerank_score": round(float(g_data.get("pagerank", 0)), 4),
                             "brokerage_rank": round(float(g_data.get("betweenness", 0)), 4),
                             "connectivity_rank": round(float(g_data.get("degree", 0)), 4),
                             "spread_efficiency": round(float(g_data.get("closeness", 0)), 4)

@@ -1,12 +1,9 @@
 import logging
-import time
 import os
-import json
-import re
+import torch
+from transformers import pipeline
 from dotenv import load_dotenv
 from db.postgres import db_manager
-from langchain_groq import ChatGroq
-from langchain_core.messages import SystemMessage, HumanMessage
 
 # Force Python to load the .env file into the OS environment variables
 load_dotenv()
@@ -15,34 +12,35 @@ logger = logging.getLogger("NLPEngine")
 
 class NLPEngine:
     """
-    Cloud-Native NLP Engine using Groq's Llama-3 for high-speed intent classification.
-    Bypasses Hugging Face completely for 100% reliability and zero local RAM usage.
+    True Forensic NLP Engine utilizing zero-shot classification (NLI) for intent detection.
+    Configured explicitly for Hugging Face Spaces CPU-only environment.
+    Features a persistence layer in PostgreSQL to cache heavy mathematical inference.
     """
-    def __init__(self):
-        self.api_key = os.getenv("GROQ_API_KEY")
-        self.model_name = "llama-3.3-70b-versatile"
+    def __init__(self, model_name="valhalla/distilbart-mnli-12-1"):
+        # CRITICAL FOR HUGGING FACE SPACES FREE TIER: 
+        # Force CPU mode (device = -1). The free tier has 16GB RAM but NO GPU.
+        self.device = -1
         
-        logger.info("Initializing Forensic NLP Engine using Groq Inference...")
+        logger.info(f"Initializing True NLP Classification Pipeline: {model_name} on CPU")
         
-        if self.api_key:
-            self.chat = ChatGroq(
-                temperature=0.0,
-                model_name=self.model_name,
-                groq_api_key=self.api_key,
-                max_retries=3
+        try:
+            self.classifier = pipeline(
+                "zero-shot-classification", 
+                model=model_name, 
+                device=self.device
             )
-        else:
-            self.chat = None
-            logger.error("GROQ_API_KEY not found. NLP analysis will fail.")
+            logger.info("NLP classification pipeline weights loaded successfully.")
+        except Exception as e:
+            logger.error(f"Failed to initialize NLP classification pipeline: {e}")
+            self.classifier = None
             
         try:
-            # Ensure the cache tables are ready in Postgres
             db_manager.initialize_tables()
         except Exception as e:
             logger.error(f"Failed to initialize NLP cache tables: {e}")
 
     def _get_persistent_results(self, case_id: str):
-        """Retrieves previously computed results from PostgreSQL."""
+        """Retrieves cached analysis results from PostgreSQL."""
         try:
             with db_manager.get_connection() as conn:
                 with conn.cursor() as cursor:
@@ -59,11 +57,11 @@ class NLPEngine:
                             }
                         return results
         except Exception as e:
-            logger.error(f"Persistent storage read error: {e}")
+            logger.error(f"Error reading persistent NLP results: {e}")
         return None
 
     def _save_persistent_results(self, case_id: str, risk_profile: dict):
-        """Saves computation results to PostgreSQL for future instant access."""
+        """Caches mathematical inference results to PostgreSQL."""
         try:
             with db_manager.get_connection() as conn:
                 with conn.cursor() as cursor:
@@ -85,19 +83,20 @@ class NLPEngine:
                         ))
                     conn.commit()
         except Exception as e:
-            logger.error(f"Persistent storage write error: {e}")
+            logger.error(f"Error writing persistent NLP results: {e}")
 
     def analyze_case_evidence(self, case_id: str):
         """
-        Main entry point. Uses Groq to batch-analyze messages for forensic intents.
+        Orchestrates evidence analysis using true Zero-Shot NLI. 
+        Checks Postgres cache first to prevent redundant CPU computation.
         """
         cached_data = self._get_persistent_results(case_id)
         if cached_data:
-            logger.info(f"Loaded NLP analysis from cache for case: {case_id}")
+            logger.info(f"Loaded True NLP analysis from cache for case: {case_id}")
             return cached_data
 
-        if not self.chat:
-            logger.error("Groq client offline. Cannot perform NLP inference.")
+        if not self.classifier:
+            logger.error("NLP classifier unavailable for inference.")
             return {}
 
         risk_profile = {}
@@ -111,71 +110,47 @@ class NLPEngine:
             logger.error(f"Database error during evidence retrieval: {e}")
             return {}
 
-        if not rows: return {}
+        if not rows:
+            return {}
 
-        logger.info(f"Commencing Groq NLP Analysis for {len(rows)} messages...")
+        senders, messages = zip(*rows)
+        candidate_labels = [
+            "financial coordination", 
+            "logistical planning", 
+            "suspicious behavior", 
+            "evidence destruction"
+        ]
 
-        # Group messages by sender to analyze behavior contextually
-        sender_messages = {}
-        for sender, message in rows:
-            if not message.strip(): continue
-            if sender not in sender_messages:
-                sender_messages[sender] = []
-            sender_messages[sender].append(message)
+        logger.info(f"Commencing True Zero-Shot analysis for {len(messages)} messages...")
 
-        system_prompt = (
-            "You are an expert Forensic NLP classification system. "
-            "Analyze the following batch of messages from a single suspect. "
-            "Determine the presence of these four forensic intents: "
-            "'financial coordination', 'logistical planning', 'suspicious behavior', 'evidence destruction'.\n"
-            "Respond ONLY with a valid JSON object where keys are the exact intent names and values are a float between 0.0 and 1.0 representing your confidence. "
-            "If an intent is not present, assign it 0.0. Do not include markdown blocks or any other text."
-        )
+        # Batch inference through the local Transformers pipeline
+        # Batch size of 8 is optimized for CPU processing without freezing
+        results = self.classifier(list(messages), candidate_labels, multi_label=True, batch_size=8)
 
-        for sender, messages in sender_messages.items():
+        for i, analysis in enumerate(results):
+            sender = senders[i]
             if sender not in risk_profile:
-                risk_profile[sender] = {"total_messages_analyzed": 0, "risk_score_sum": 0.0, "detected_behaviors": set()}
+                risk_profile[sender] = {
+                    "total_messages_analyzed": 0, 
+                    "risk_score_sum": 0.0, 
+                    "detected_behaviors": set()
+                }
             
-            # Process in batches of 40 messages to utilize Groq's large context window effectively
-            chunks = [messages[i:i + 40] for i in range(0, len(messages), 40)]
-            
-            for chunk in chunks:
-                risk_profile[sender]["total_messages_analyzed"] += len(chunk)
-                messages_text = "\n".join([f"- {msg}" for msg in chunk])
-                
-                try:
-                    response = self.chat.invoke([
-                        SystemMessage(content=system_prompt),
-                        HumanMessage(content=messages_text)
-                    ])
-                    
-                    # Safely extract JSON using regex in case the LLM wraps it in markdown
-                    raw_text = response.content
-                    json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
-                    
-                    if json_match:
-                        analysis = json.loads(json_match.group(0))
-                        
-                        for label, score in analysis.items():
-                            try:
-                                float_score = float(score)
-                                if float_score > 0.7:
-                                    risk_profile[sender]["risk_score_sum"] += float_score
-                                    risk_profile[sender]["detected_behaviors"].add(label)
-                            except ValueError:
-                                continue
-                except Exception as e:
-                    logger.error(f"Groq NLP classification failed for {sender}: {e}")
-                
-                # Tiny sleep to ensure we don't hit Groq's Free Tier RPM limits
-                time.sleep(1.5)
+            risk_profile[sender]["total_messages_analyzed"] += 1
+            for label, score in zip(analysis['labels'], analysis['scores']):
+                # Filter for high-confidence forensic indicators based on entailment probabilities
+                if score > 0.7:
+                    risk_profile[sender]["risk_score_sum"] += score
+                    risk_profile[sender]["detected_behaviors"].add(label)
 
         # Convert sets to lists for DB storage
         for s in risk_profile:
             risk_profile[s]["detected_behaviors"] = list(risk_profile[s]["detected_behaviors"])
 
+        # Update cache with new mathematical findings
         self._save_persistent_results(case_id, risk_profile)
-        logger.info("Groq NLP analysis complete and cached to PostgreSQL.")
+        logger.info("True NLP analysis complete and cached to PostgreSQL.")
         return risk_profile
 
+# Singleton engine instance
 nlp_engine = NLPEngine()
